@@ -1717,6 +1717,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "markchain"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "futures",
+ "libp2p",
+ "log",
+ "once_cell",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "structopt",
+ "tokio",
+]
+
+[[package]]
 name = "match_cfg"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2019,22 +2035,6 @@ dependencies = [
  "ecdsa",
  "elliptic-curve",
  "sha2 0.10.6",
-]
-
-[[package]]
-name = "p2p"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "futures",
- "libp2p",
- "log",
- "once_cell",
- "serde",
- "serde_derive",
- "serde_json",
- "structopt",
- "tokio",
 ]
 
 [[package]]
