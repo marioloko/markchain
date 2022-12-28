@@ -13,10 +13,6 @@ impl BlockChain {
         }
     }
 
-    pub fn genesis_block(&self) -> &Block {
-        &self.blocks[0]
-    }
-
     pub fn latest_block(&self) -> &Block {
         match self.blocks.last() {
             Some(block) => block,

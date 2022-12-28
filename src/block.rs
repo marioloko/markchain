@@ -1,6 +1,6 @@
 use serde_derive::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BlockVersion {
     V1,
     V2,
@@ -8,7 +8,7 @@ pub enum BlockVersion {
     V4,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeader {
     version: BlockVersion,
     previous_block_header: Option<String>,
@@ -40,7 +40,7 @@ impl BlockHeader {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
     header: BlockHeader,
     index: u64,

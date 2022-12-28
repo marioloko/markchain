@@ -10,6 +10,7 @@ pub enum MarkChainError {
     Noise(libp2p::noise::NoiseError),
     Io(std::io::Error),
     Multiaddr(libp2p::core::multiaddr::Error),
+    SerdeJson(serde_json::Error),
 }
 
 impl fmt::Display for MarkChainError {
@@ -19,6 +20,7 @@ impl fmt::Display for MarkChainError {
             MarkChainError::Noise(error) => write!(f, "Noise: {} ", error),
             MarkChainError::Io(error) => write!(f, "Io: {} ", error),
             MarkChainError::Multiaddr(error) => write!(f, "Multiaddr: {}", error),
+            MarkChainError::SerdeJson(error) => write!(f, "SerdeJson: {}", error),
         }
     }
 }
@@ -46,5 +48,11 @@ impl From<std::io::Error> for MarkChainError {
 impl From<libp2p::core::multiaddr::Error> for MarkChainError {
     fn from(error: libp2p::core::multiaddr::Error) -> MarkChainError {
         MarkChainError::Multiaddr(error)
+    }
+}
+
+impl From<serde_json::Error> for MarkChainError {
+    fn from(error: serde_json::Error) -> MarkChainError {
+        MarkChainError::SerdeJson(error)
     }
 }

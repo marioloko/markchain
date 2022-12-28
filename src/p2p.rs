@@ -18,29 +18,27 @@ use libp2p::{
     PeerId, Transport,
 };
 
-use log::{debug, error, info};
-use once_cell::sync::Lazy;
+use log::{debug, info, warn};
 use serde_derive::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::time::Duration;
 
-static KEYS: Lazy<identity::Keypair> = Lazy::new(identity::Keypair::generate_ed25519);
-static PEER_ID: Lazy<PeerId> = Lazy::new(|| PeerId::from(KEYS.public()));
-static TOPIC: Lazy<Topic> = Lazy::new(|| Topic::new("markchain"));
+static TOPIC: &str = "markchain";
 
 type MarkChainSwarmEvent = SwarmEvent<<MarkChainBehaviour as NetworkBehaviour>::OutEvent, <<<MarkChainBehaviour as NetworkBehaviour>::ConnectionHandler as IntoConnectionHandler>::Handler as ConnectionHandler>::Error>;
 
 pub struct MarkChainNetwork {
     swarm: Swarm<MarkChainBehaviour>,
     blockchain: BlockChain,
-    peers: HashSet<PeerId>,
+    peer_id: PeerId,
+    topic: Topic,
 }
 
 impl MarkChainNetwork {
-    pub fn new() -> Result<MarkChainNetwork> {
-        info!("Peer ID: {}", PEER_ID.to_base58());
+    pub fn new(keys: identity::Keypair) -> Result<MarkChainNetwork> {
+        let peer_id = PeerId::from(keys.public());
+        info!("Peer ID: {}", peer_id.to_base58());
 
-        let auth_keys = noise::Keypair::<X25519Spec>::new().into_authentic(&KEYS)?;
+        let auth_keys = noise::Keypair::<X25519Spec>::new().into_authentic(&keys)?;
 
         let transport = TokioTransport::new(Default::default())
             .upgrade(upgrade::Version::V1)
@@ -49,77 +47,140 @@ impl MarkChainNetwork {
             .boxed();
 
         let mut behaviour = MarkChainBehaviour {
-            floodsub: Floodsub::new(*PEER_ID),
+            floodsub: Floodsub::new(peer_id),
             mdns: Mdns::new(Default::default())?,
         };
 
-        behaviour.floodsub.subscribe(TOPIC.clone());
+        let topic = Topic::new(TOPIC);
+        behaviour.floodsub.subscribe(topic.clone());
 
-        let swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, *PEER_ID).build();
+        let swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build();
 
         let blockchain = BlockChain::new();
-
-        let peers = HashSet::new();
 
         Ok(MarkChainNetwork {
             swarm,
             blockchain,
-            peers,
+            peer_id,
+            topic,
         })
     }
 
     pub async fn run(&mut self) -> Result<()> {
         self.swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
-        let mut message_timeout = tokio::time::interval(Duration::from_secs(10));
+        let init_request_timeout = tokio::time::sleep(Duration::from_secs(10));
+        tokio::pin!(init_request_timeout);
 
+        // At the beggining the timeout and swarm events can arrive in any order, so
+        // use select to choose the futures which finishes before.
+        loop {
+            tokio::select! {
+                () = &mut init_request_timeout => {
+                    self.request_block_at(1)?;
+                    break;
+                }
+                event = self.swarm.select_next_some() => self.handle_swarm_event(event)?,
+            }
+        }
+
+        // After the timeout we only need to wait for swarm events, so there is no need
+        // to use select.
         loop {
             let event = self.swarm.select_next_some().await;
-            self.handle_swarm_event(event);
+            self.handle_swarm_event(event)?;
         }
     }
 
-    fn handle_swarm_event(&mut self, event: MarkChainSwarmEvent) {
+    fn request_block_at(&mut self, index: usize) -> Result<()> {
+        let to = Receiver::All;
+        let content = MessageBody::RequestBlock(index);
+        self.send_message(to, content)
+    }
+
+    fn respond_with_block(&mut self, peer_id: PeerId, block: Block) -> Result<()> {
+        let to = Receiver::One(peer_id);
+        let content = MessageBody::ReturnBlock(block);
+        self.send_message(to, content)
+    }
+
+    fn send_message(&mut self, to: Receiver, content: MessageBody) -> Result<()> {
+        let message = Message {
+            from: self.peer_id,
+            to,
+            content,
+        };
+        let json = serde_json::to_vec(&message)?;
+        let topic = self.topic.clone();
+        self.swarm.behaviour_mut().floodsub.publish(topic, json);
+        Ok(())
+    }
+
+    fn handle_swarm_event(&mut self, event: MarkChainSwarmEvent) -> Result<()> {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Listening on {address:?}");
             }
-            SwarmEvent::Behaviour(markchain_event) => self.handle_markchain_event(markchain_event),
+            SwarmEvent::Behaviour(markchain_event) => {
+                self.handle_markchain_event(markchain_event)?
+            }
             event => {
                 debug!("Unhandled event: {event:?}");
             }
         }
+        Ok(())
     }
 
-    fn handle_markchain_event(&mut self, event: MarkChainEvent) {
+    fn handle_markchain_event(&mut self, event: MarkChainEvent) -> Result<()> {
         match event {
-            MarkChainEvent::Floodsub(floodsub_event) => self.handle_floodsub_event(floodsub_event),
-            MarkChainEvent::Mdns(mdns_event) => self.handle_mdns_event(mdns_event),
-            event => {
-                debug!("Unhandled markchain event: {event:?}");
+            MarkChainEvent::Floodsub(floodsub_event) => {
+                self.handle_floodsub_event(floodsub_event)?
             }
+            MarkChainEvent::Mdns(mdns_event) => self.handle_mdns_event(mdns_event),
         }
+        Ok(())
     }
 
-    fn handle_floodsub_event(&mut self, event: FloodsubEvent) {
+    fn handle_floodsub_event(&mut self, event: FloodsubEvent) -> Result<()> {
         match event {
             FloodsubEvent::Message(message) => {
-                match serde_json::from_slice::<Message>(&message.data) {
-                    Ok(message) => info!("{message:#?}"),
-                    Err(error) => error!("Deserialization Error: {error}"),
+                let message = serde_json::from_slice::<Message>(&message.data)?;
+                match message.to {
+                    Receiver::All => self.handle_message(message)?,
+                    Receiver::One(peer_id) if peer_id == self.peer_id => {
+                        self.handle_message(message)?
+                    }
+                    _ => {}
                 }
             }
             event => {
                 debug!("Unhandled floodsub event: {event:?}");
             }
         }
+        Ok(())
+    }
+
+    fn handle_message(&mut self, message: Message) -> Result<()> {
+        info!("{message:?}");
+        match message.content {
+            MessageBody::RequestBlock(index) => match self.blockchain.get_block(index) {
+                None => warn!("No block found at index: {index}"),
+                Some(block) => self.respond_with_block(message.from, block.clone())?,
+            },
+            MessageBody::ReturnBlock(block) => {
+                self.blockchain.add_block(block);
+                let next_block_index = self.blockchain.len();
+                info!("request next block at index: {next_block_index}");
+                self.request_block_at(next_block_index)?;
+            }
+        }
+        Ok(())
     }
 
     fn handle_mdns_event(&mut self, event: MdnsEvent) {
         match event {
             MdnsEvent::Discovered(list) => {
                 for (peer, _) in list {
-                    self.peers.insert(peer);
                     self.swarm
                         .behaviour_mut()
                         .floodsub
@@ -129,7 +190,6 @@ impl MarkChainNetwork {
             MdnsEvent::Expired(list) => {
                 for (peer, _) in list {
                     if !self.swarm.behaviour().mdns.has_node(&peer) {
-                        self.peers.remove(&peer);
                         self.swarm
                             .behaviour_mut()
                             .floodsub
@@ -147,10 +207,16 @@ enum MessageBody {
     ReturnBlock(Block),
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+enum Receiver {
+    All,
+    One(PeerId),
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Message {
-    to: String,
-    from: String,
+    to: Receiver,
+    from: PeerId,
     content: MessageBody,
 }
 
