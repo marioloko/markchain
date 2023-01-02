@@ -11,6 +11,7 @@ pub enum MarkChainError {
     Io(std::io::Error),
     Multiaddr(libp2p::core::multiaddr::Error),
     SerdeJson(serde_json::Error),
+    Bincode(Box<bincode::ErrorKind>),
 }
 
 impl fmt::Display for MarkChainError {
@@ -21,6 +22,7 @@ impl fmt::Display for MarkChainError {
             MarkChainError::Io(error) => write!(f, "Io: {} ", error),
             MarkChainError::Multiaddr(error) => write!(f, "Multiaddr: {}", error),
             MarkChainError::SerdeJson(error) => write!(f, "SerdeJson: {}", error),
+            MarkChainError::Bincode(error) => write!(f, "Bincode: {}", error),
         }
     }
 }
@@ -54,5 +56,11 @@ impl From<libp2p::core::multiaddr::Error> for MarkChainError {
 impl From<serde_json::Error> for MarkChainError {
     fn from(error: serde_json::Error) -> MarkChainError {
         MarkChainError::SerdeJson(error)
+    }
+}
+
+impl From<Box<bincode::ErrorKind>> for MarkChainError {
+    fn from(error: Box<bincode::ErrorKind>) -> MarkChainError {
+        MarkChainError::Bincode(error)
     }
 }

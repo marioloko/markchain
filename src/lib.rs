@@ -1,4 +1,3 @@
-mod block;
-mod chain;
+mod blockchain;
 pub mod error;
 pub mod p2p;
