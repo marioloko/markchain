@@ -1,9 +1,11 @@
+use crate::db::Db;
 use crate::error::Result;
 
 use multihash::{Multihash, MultihashDigest};
 use serde::ser::Serialize;
 use serde_derive::{Deserialize, Serialize};
 
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The timestamp in millis for the genesis block. It is 2022-12-01 00:00:00.
@@ -14,38 +16,53 @@ const GENESIS_BLOCK_INDEX: usize = 0;
 
 #[derive(Debug)]
 pub struct BlockChain {
-    blocks: Vec<Block>,
+    blocks: Db<usize, Block>,
+    last_index: usize,
 }
 
 impl BlockChain {
-    pub fn try_new() -> Result<BlockChain> {
-        Ok(BlockChain {
-            blocks: vec![generate_genesis_block()?],
-        })
+    pub fn try_new<P: AsRef<Path>>(db_path: &P) -> Result<BlockChain> {
+        let blocks = Db::open(db_path)?;
+
+        let last_index = match blocks.last_value()? {
+            None => {
+                let genesis_block = generate_genesis_block()?;
+                blocks.insert(&0, &genesis_block)?;
+                genesis_block.header.index
+            }
+            Some(block) => block.header.index,
+        };
+
+        Ok(BlockChain { blocks, last_index })
     }
 
-    pub fn latest_block(&self) -> &Block {
-        match self.blocks.last() {
-            Some(block) => block,
+    pub fn latest_block(&self) -> Result<Block> {
+        match self.blocks.last_value()? {
+            Some(block) => Ok(block),
             _ => unreachable!(),
         }
     }
 
-    pub fn add_block(&mut self, new_block: Block) -> Result<()> {
-        let previous_block = self.latest_block();
+    pub fn add_block(&mut self, new_block: Block) -> Result<bool> {
+        let previous_block = self.latest_block()?;
         let previous_header_hash = BlockHeader::generate_header_hash(&previous_block.header)?;
-        if previous_block.header.index < new_block.header.index
-            && self.blocks.len() == new_block.header.index
+        let expected_new_block_index = previous_block.header.index + 1;
+        let new_block_index = new_block.header.index;
+        if expected_new_block_index == new_block_index
+            && self.len() == new_block_index
             && new_block.header.previous_header_hash == Some(previous_header_hash)
         {
-            self.blocks.push(new_block);
+            self.blocks.insert(&expected_new_block_index, &new_block)?;
+            self.last_index += 1;
+            return Ok(true);
         }
-        Ok(())
+
+        Ok(false)
     }
 
     pub fn generate_next_block(&self, transactions: Option<Vec<u8>>) -> Result<Block> {
-        let latest_header = &self.latest_block().header;
-        let previous_header_hash = BlockHeader::generate_header_hash(&latest_header)?;
+        let latest_header = &self.latest_block()?.header;
+        let previous_header_hash = BlockHeader::generate_header_hash(latest_header)?;
         let index = latest_header.index + 1;
         let epoch_timestamp = millis_now();
         let merkle_root = BlockHeader::generate_merkle_root(&transactions)?;
@@ -59,12 +76,12 @@ impl BlockChain {
         Ok(Block::new(header, transactions))
     }
 
-    pub fn get_block(&self, index: usize) -> Option<&Block> {
-        self.blocks.get(index)
+    pub fn get_block(&self, index: usize) -> Result<Option<Block>> {
+        self.blocks.get(&index)
     }
 
     pub fn len(&self) -> usize {
-        self.blocks.len()
+        self.last_index + 1
     }
 }
 
@@ -147,6 +164,6 @@ fn sha3_256_multihash<S>(data: &S) -> Result<Multihash>
 where
     S: Serialize,
 {
-    let bytes = bincode::serialize(data)?;
+    let bytes = serde_json::to_vec(data)?;
     Ok(multihash::Code::Sha3_256.digest(&bytes))
 }

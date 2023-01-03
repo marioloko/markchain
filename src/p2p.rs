@@ -22,6 +22,7 @@ use log::{debug, error, info, warn};
 use rand::seq::IteratorRandom;
 use serde_derive::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -51,7 +52,10 @@ pub struct MarkChainNetwork {
 }
 
 impl MarkChainNetwork {
-    pub fn new(keys: identity::Keypair) -> Result<MarkChainNetwork> {
+    pub fn try_new<P: AsRef<Path>>(
+        keys: identity::Keypair,
+        db_path: &P,
+    ) -> Result<MarkChainNetwork> {
         let peer_id = PeerId::from(keys.public());
         info!("Peer ID: {}", peer_id.to_base58());
 
@@ -74,7 +78,7 @@ impl MarkChainNetwork {
 
         let swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build();
 
-        let blockchain = BlockChain::try_new()?;
+        let blockchain = BlockChain::try_new(db_path)?;
 
         let (event_sender, event_receiver) = tokio_mpsc::channel(CHANNEL_SIZE);
 
@@ -98,9 +102,13 @@ impl MarkChainNetwork {
 
         // Synchronize the first block.
         let event_sender = self.event_sender.clone();
+        let next_index = self.blockchain.len();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            if let Err(err) = event_sender.send(TriggerEvent::RequestBlock(1)).await {
+            if let Err(err) = event_sender
+                .send(TriggerEvent::RequestBlock(next_index))
+                .await
+            {
                 error!("error synchronizing first block: {err}");
             }
         });
@@ -205,11 +213,12 @@ impl MarkChainNetwork {
 
     fn create_block(&mut self) -> Result<()> {
         let block = self.blockchain.generate_next_block(None)?;
-        self.blockchain.add_block(block.clone())?;
-
-        let to = Receiver::All;
-        let content = MessageBody::NewBlock(block);
-        self.send_message(to, content)
+        if self.blockchain.add_block(block.clone())? {
+            let to = Receiver::All;
+            let content = MessageBody::NewBlock(block);
+            self.send_message(to, content)?;
+        }
+        Ok(())
     }
 
     fn send_message(&mut self, to: Receiver, content: MessageBody) -> Result<()> {
@@ -295,24 +304,31 @@ impl MarkChainNetwork {
     fn handle_message(&mut self, message: Message) -> Result<()> {
         info!("{message:?}");
         match message.content {
-            MessageBody::RequestBlock(index) => match self.blockchain.get_block(index) {
+            MessageBody::RequestBlock(index) => match self.blockchain.get_block(index)? {
                 None => warn!("No block found at index: {index}"),
-                Some(block) => self.sync_block(message.from, block.clone())?,
+                Some(block) => self.sync_block(message.from, block)?,
             },
             MessageBody::SyncBlock(block) => {
-                self.blockchain.add_block(block)?;
-                let next_block_index = self.blockchain.len();
-                info!("request next block at index: {next_block_index}");
-                self.request_block_at(next_block_index)?;
+                if self.blockchain.add_block(block)? {
+                    let next_block_index = self.blockchain.len();
+                    info!("request next block at index: {next_block_index}");
+                    self.request_block_at(next_block_index)?;
+                }
             }
-            MessageBody::NewBlock(block) => self.blockchain.add_block(block)?,
+            MessageBody::NewBlock(block) => {
+                self.blockchain.add_block(block)?;
+            }
             MessageBody::RequestAllValidators => {
                 self.register_validator(self.peer_id)?;
             }
             MessageBody::RegisterValidator(validators) => {
                 self.validators.insert(validators);
             }
-            MessageBody::Vote(vote) => self.insert_vote(message.from, vote),
+            MessageBody::Vote(vote) => {
+                if vote.index >= self.blockchain.len() {
+                    self.insert_vote(message.from, vote);
+                }
+            }
         }
         Ok(())
     }
