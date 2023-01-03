@@ -1,7 +1,8 @@
+use std::path::PathBuf;
+
 use libp2p::identity;
 use markchain::error::Result;
 use markchain::p2p::MarkChainNetwork;
-use std::path::PathBuf;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]

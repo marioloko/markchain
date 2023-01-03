@@ -1,5 +1,6 @@
-use crate::blockchain::{Block, BlockChain};
-use crate::error::Result;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::time::Duration;
 
 use libp2p::{
     core::upgrade,
@@ -17,14 +18,15 @@ use libp2p::{
     tcp::tokio::Transport as TokioTransport,
     PeerId, Transport,
 };
-
 use log::{debug, error, info, warn};
 use rand::seq::IteratorRandom;
 use serde_derive::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
+
+use crate::blockchain::{Block, BlockChain};
+use crate::db::Db;
+use crate::error::Result;
+use crate::wallet::WalletManager;
 
 const CHANNEL_SIZE: usize = 2_048;
 const TOPIC: &str = "markchain";
@@ -47,6 +49,7 @@ pub struct MarkChainNetwork {
     topic: Topic,
     validators: HashSet<PeerId>,
     votes: Votes,
+    wallet_manager: WalletManager,
     event_sender: tokio_mpsc::Sender<TriggerEvent>,
     event_receiver: tokio_mpsc::Receiver<TriggerEvent>,
 }
@@ -78,7 +81,11 @@ impl MarkChainNetwork {
 
         let swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build();
 
-        let blockchain = BlockChain::try_new(db_path)?;
+        let storage = Db::open(db_path)?;
+
+        let blockchain = BlockChain::try_new(&storage)?;
+
+        let wallet_manager = WalletManager::try_new(&storage)?;
 
         let (event_sender, event_receiver) = tokio_mpsc::channel(CHANNEL_SIZE);
 
@@ -92,6 +99,7 @@ impl MarkChainNetwork {
             topic,
             validators,
             votes: Votes::new(),
+            wallet_manager,
             event_sender,
             event_receiver,
         })
@@ -99,6 +107,9 @@ impl MarkChainNetwork {
 
     pub async fn run(&mut self) -> Result<()> {
         self.swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+
+        let default_wallet = self.wallet_manager.default_wallet()?;
+        info!("Wallet address: {:?}", default_wallet.address());
 
         // Synchronize the first block.
         let event_sender = self.event_sender.clone();

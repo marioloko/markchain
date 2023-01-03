@@ -1,5 +1,7 @@
 use std::fmt;
 
+use libp2p::identity::error::DecodingError as WalletDecodingError;
+
 pub type Result<T> = std::result::Result<T, MarkChainError>;
 
 type TransportIoError = libp2p::TransportError<std::io::Error>;
@@ -12,6 +14,7 @@ pub enum MarkChainError {
     Multiaddr(libp2p::core::multiaddr::Error),
     SerdeJson(serde_json::Error),
     Sled(sled::Error),
+    WalletDecoding(WalletDecodingError),
 }
 
 impl fmt::Display for MarkChainError {
@@ -23,6 +26,7 @@ impl fmt::Display for MarkChainError {
             MarkChainError::Multiaddr(error) => write!(f, "Multiaddr: {}", error),
             MarkChainError::SerdeJson(error) => write!(f, "SerdeJson: {}", error),
             MarkChainError::Sled(error) => write!(f, "Sled: {}", error),
+            MarkChainError::WalletDecoding(error) => write!(f, "WalletDecoding: {}", error),
         }
     }
 }
@@ -62,5 +66,11 @@ impl From<serde_json::Error> for MarkChainError {
 impl From<sled::Error> for MarkChainError {
     fn from(error: sled::Error) -> MarkChainError {
         MarkChainError::Sled(error)
+    }
+}
+
+impl From<WalletDecodingError> for MarkChainError {
+    fn from(error: WalletDecodingError) -> MarkChainError {
+        MarkChainError::WalletDecoding(error)
     }
 }

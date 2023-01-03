@@ -1,12 +1,11 @@
-use crate::db::Db;
-use crate::error::Result;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use multihash::{Multihash, MultihashDigest};
 use serde::ser::Serialize;
 use serde_derive::{Deserialize, Serialize};
 
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::db::{Db, Tree};
+use crate::error::Result;
 
 /// The timestamp in millis for the genesis block. It is 2022-12-01 00:00:00.
 const GENESIS_BLOCK_TIMESTAMP_MILLIS: u64 = 1669849200000;
@@ -14,15 +13,18 @@ const GENESIS_BLOCK_TIMESTAMP_MILLIS: u64 = 1669849200000;
 /// The index of the genesis block.
 const GENESIS_BLOCK_INDEX: usize = 0;
 
+/// The name of the database tree where to store blocks.
+const BLOCK_DB: &str = "blocks";
+
 #[derive(Debug)]
 pub struct BlockChain {
-    blocks: Db<usize, Block>,
+    blocks: Tree<usize, Block>,
     last_index: usize,
 }
 
 impl BlockChain {
-    pub fn try_new<P: AsRef<Path>>(db_path: &P) -> Result<BlockChain> {
-        let blocks = Db::open(db_path)?;
+    pub fn try_new(db: &Db) -> Result<BlockChain> {
+        let blocks = db.open_tree(BLOCK_DB)?;
 
         let last_index = match blocks.last_value()? {
             None => {
