@@ -5,7 +5,7 @@ use std::time::Duration;
 use libp2p::{
     core::upgrade,
     floodsub::{Floodsub, FloodsubEvent, Topic},
-    futures::StreamExt,
+    futures::{stream, Stream, StreamExt},
     identity,
     mdns::tokio::Behaviour as Mdns,
     mdns::Event as MdnsEvent,
@@ -105,7 +105,7 @@ impl MarkChainNetwork {
         })
     }
 
-    pub async fn run(&mut self) -> Result<()> {
+    pub fn into_event_stream(mut self) -> Result<impl Stream<Item = Result<()>>> {
         self.swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
         let default_wallet = self.wallet_manager.default_wallet()?;
@@ -170,12 +170,20 @@ impl MarkChainNetwork {
             }
         });
 
-        loop {
-            tokio::select! {
-                Some(event) = self.event_receiver.recv() => self.handle_async_network_event(event)?,
-                event = self.swarm.select_next_some() => self.handle_swarm_event(event)?,
-            }
+        let stream = stream::unfold(self, |mut network| async move {
+            let result = network.handle_next_event().await;
+            Some((result, network))
+        });
+
+        Ok(stream)
+    }
+
+    async fn handle_next_event(&mut self) -> Result<()> {
+        tokio::select! {
+            Some(event) = self.event_receiver.recv() => self.handle_async_network_event(event)?,
+            event = self.swarm.select_next_some() => self.handle_swarm_event(event)?,
         }
+        Ok(())
     }
 
     fn request_block_at(&mut self, index: usize) -> Result<()> {

@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
+use libp2p::futures::StreamExt;
 use libp2p::identity;
+use log::error;
 use markchain::error::Result;
 use markchain::p2p::MarkChainNetwork;
 use structopt::StructOpt;
@@ -19,6 +21,14 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let keys = identity::Keypair::generate_ed25519();
-    let mut network = MarkChainNetwork::try_new(keys, &args.database_path)?;
-    network.run().await
+    let network = MarkChainNetwork::try_new(keys, &args.database_path)?;
+
+    let mut event_reader = network.into_event_stream()?.boxed();
+    while let Some(result) = event_reader.next().await {
+        if let Err(error) = result {
+            error!("{}", error);
+        }
+    }
+
+    Ok(())
 }
